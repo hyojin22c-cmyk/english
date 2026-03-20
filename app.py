@@ -242,9 +242,11 @@ def save_passage(passage):
 def delete_passage(passage_id):
     try:
         sheet = get_sheet()
-        cell = sheet.find(passage_id)
-        if cell:
-            sheet.delete_rows(cell.row)
+        all_values = sheet.get_all_values()
+        for i, row in enumerate(all_values):
+            if row and str(row[0]) == str(passage_id):
+                sheet.delete_rows(i + 1)
+                break
     except Exception as e:
         st.error(f"삭제 실패: {e}")
 
