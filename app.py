@@ -215,7 +215,7 @@ def get_sheet():
         sheet = spreadsheet.worksheet("지문")
     except gspread.exceptions.WorksheetNotFound:
         sheet = spreadsheet.add_worksheet(title="지문", rows=500, cols=6)
-        sheet.append_row(["id", "title", "grade", "full_text"])
+        sheet.append_row(["id", "title", "grade", "summary"])
     return sheet
 
 def load_passages():
@@ -234,7 +234,7 @@ def save_passage(passage):
             passage["id"],
             passage["title"],
             passage["grade"],
-            passage["full_text"]
+            passage["summary"]
         ])
     except Exception as e:
         st.error(f"저장 실패: {e}")
@@ -261,7 +261,7 @@ def build_prompt(passages, career, interests, grade):
     passage_text = ""
     for i, p in enumerate(passages, 1):
         passage_text += f"{i}. [{p.get('grade','전체')}] {p['title']}\n"
-        passage_text += f"{p.get('full_text','')}\n\n"
+        passage_text += f"   내용 요약: {p.get('summary','')}\n\n"
 
     return f"""당신은 고등학교 영어 교과 세부능력 및 특기사항(세특) 작성을 돕는 전문가입니다.
 
@@ -387,17 +387,22 @@ with tab_admin:
             
             new_title = st.text_input("지문 제목 *", placeholder="예: The Future of AI in Healthcare")
             new_grade = st.selectbox("대상 학년", ["전체", "1학년", "2학년", "3학년"])
-            new_text = st.text_area("지문 원문 *", placeholder="영어 지문 전체를 붙여넣으세요.", height=200)
+            new_summary = st.text_area(
+                "지문 내용 요약 *",
+                placeholder="예: AI가 의료 진단에 활용되는 방식과 윤리적 문제를 다룬 지문. 알고리즘 편향, 의사결정 책임, 환자 데이터 보호 등을 논의함.",
+                height=150
+            )
+            st.caption("💡 지문의 핵심 주제와 다루는 개념을 2~4문장으로 요약해주세요.")
 
             if st.button("💾 지문 저장", use_container_width=True):
-                if not new_title or not new_text:
-                    st.warning("제목과 지문 원문은 필수입니다!")
+                if not new_title or not new_summary:
+                    st.warning("제목과 요약은 필수입니다!")
                 else:
                     new_passage = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "title": new_title,
                         "grade": new_grade,
-                        "full_text": new_text
+                        "summary": new_summary
                     }
                     save_passage(new_passage)
                     st.session_state.passages.append(new_passage)
@@ -423,6 +428,7 @@ with tab_admin:
                             <div class="passage-card">
                                 <h4>{p['title']}</h4>
                                 <span class="grade-badge">{p.get('grade','전체')}</span>
+                                {"<br><small style='color:#888;margin-top:4px;display:block'>" + str(p.get('summary',''))[:60] + "...</small>" if p.get('summary') else ""}
                             </div>
                             """, unsafe_allow_html=True)
                         with c2:
