@@ -215,7 +215,7 @@ def get_sheet():
         sheet = spreadsheet.worksheet("지문")
     except gspread.exceptions.WorksheetNotFound:
         sheet = spreadsheet.add_worksheet(title="지문", rows=500, cols=6)
-        sheet.append_row(["id", "title", "grade", "keywords", "summary"])
+        sheet.append_row(["id", "title", "grade", "full_text"])
     return sheet
 
 def load_passages():
@@ -234,8 +234,7 @@ def save_passage(passage):
             passage["id"],
             passage["title"],
             passage["grade"],
-            passage["keywords"],
-            passage["summary"]
+            passage["full_text"]
         ])
     except Exception as e:
         st.error(f"저장 실패: {e}")
@@ -257,45 +256,17 @@ def get_gemini_model():
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.0-flash")
 
-# ── 지문 분석 프롬프트 ────────────────────────────────────
-def extract_passage_info(model, title, full_text):
-    prompt = f"""다음 영어 지문을 분석해서 아래 형식으로만 답해줘. 다른 말은 하지 마.
-
-지문 제목: {title}
-지문 내용:
-{full_text}
-
-형식:
-KEYWORDS: (핵심 키워드 5~8개, 쉼표로 구분, 한국어로)
-SUMMARY: (이 지문이 다루는 핵심 내용을 2~3문장으로 요약, 한국어로)
-"""
-    response = model.generate_content(prompt)
-    text = response.text.strip()
-    
-    keywords = ""
-    summary = ""
-    for line in text.split("\n"):
-        if line.startswith("KEYWORDS:"):
-            keywords = line.replace("KEYWORDS:", "").strip()
-        elif line.startswith("SUMMARY:"):
-            summary = line.replace("SUMMARY:", "").strip()
-    
-    return keywords, summary
-
 # ── 추천 프롬프트 생성 ────────────────────────────────────
 def build_prompt(passages, career, interests, grade):
-    passage_summary = ""
+    passage_text = ""
     for i, p in enumerate(passages, 1):
-        passage_summary += f"{i}. [{p.get('grade','전체')}] {p['title']}\n"
-        passage_summary += f"   핵심 키워드: {p['keywords']}\n"
-        if p.get('summary'):
-            passage_summary += f"   주제 요약: {p['summary']}\n"
-        passage_summary += "\n"
+        passage_text += f"{i}. [{p.get('grade','전체')}] {p['title']}\n"
+        passage_text += f"{p.get('full_text','')}\n\n"
 
     return f"""당신은 고등학교 영어 교과 세부능력 및 특기사항(세특) 작성을 돕는 전문가입니다.
 
 [수업에서 다룬 지문 목록]
-{passage_summary}
+{passage_text}
 
 [학생 정보]
 - 학년: {grade}
@@ -360,7 +331,6 @@ with tab_student:
                 <div class="passage-card">
                     <h4>{p['title']}</h4>
                     <span class="grade-badge">{p.get('grade', '전체')}</span>
-                    <span class="keywords">🏷 {p['keywords']}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -419,47 +389,18 @@ with tab_admin:
             new_grade = st.selectbox("대상 학년", ["전체", "1학년", "2학년", "3학년"])
             new_text = st.text_area("지문 원문 *", placeholder="영어 지문 전체를 붙여넣으세요.", height=200)
 
-            # 자동 추출된 결과 저장용
-            if "extracted_keywords" not in st.session_state:
-                st.session_state.extracted_keywords = ""
-            if "extracted_summary" not in st.session_state:
-                st.session_state.extracted_summary = ""
-
-            if st.button("🔍 키워드/요약 자동 추출", use_container_width=True):
-                if not new_title or not new_text:
-                    st.warning("제목과 지문 원문을 입력해주세요!")
-                else:
-                    model = get_gemini_model()
-                    if not model:
-                        st.error("API 키가 설정되지 않았습니다.")
-                    else:
-                        with st.spinner("지문 분석 중..."):
-                            kw, sm = extract_passage_info(model, new_title, new_text)
-                            st.session_state.extracted_keywords = kw
-                            st.session_state.extracted_summary = sm
-
-            if st.session_state.extracted_keywords:
-                st.success("✅ 추출 완료! 확인 후 저장하세요.")
-                st.caption(f"🏷 키워드: {st.session_state.extracted_keywords}")
-                st.caption(f"📝 요약: {st.session_state.extracted_summary}")
-
             if st.button("💾 지문 저장", use_container_width=True):
                 if not new_title or not new_text:
                     st.warning("제목과 지문 원문은 필수입니다!")
-                elif not st.session_state.extracted_keywords:
-                    st.warning("먼저 '키워드/요약 자동 추출' 버튼을 눌러주세요!")
                 else:
                     new_passage = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "title": new_title,
                         "grade": new_grade,
-                        "keywords": st.session_state.extracted_keywords,
-                        "summary": st.session_state.extracted_summary
+                        "full_text": new_text
                     }
                     save_passage(new_passage)
                     st.session_state.passages.append(new_passage)
-                    st.session_state.extracted_keywords = ""
-                    st.session_state.extracted_summary = ""
                     st.success(f"✅ '{new_title}' 추가 완료!")
                     st.rerun()
 
@@ -482,8 +423,6 @@ with tab_admin:
                             <div class="passage-card">
                                 <h4>{p['title']}</h4>
                                 <span class="grade-badge">{p.get('grade','전체')}</span>
-                                <span class="keywords">🏷 {p['keywords']}</span>
-                                {"<br><small style='color:#888'>" + p['summary'][:60] + "...</small>" if p.get('summary') else ""}
                             </div>
                             """, unsafe_allow_html=True)
                         with c2:
