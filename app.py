@@ -350,7 +350,7 @@ def build_prompt(passages, career, major, interests):
 - 희망 학과: {major if major else '미입력'}
 - 관심 분야: {interests if interests else '미입력'}
 
-위 지문 내용을 바탕으로, 이 학생의 진로와 관심사에 연계할 수 있는 세특 주제를 3~5개 추천해주세요.
+위 지문 내용을 바탕으로, 이 학생의 진로와 관심사에 가장 잘 연계되는 세특 주제를 정확히 3개만 추천해주세요.
 
 각 주제는 반드시 아래 형식으로 작성하세요:
 
