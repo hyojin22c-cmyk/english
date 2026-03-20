@@ -1,8 +1,9 @@
 import streamlit as st
 import google.generativeai as genai
-import json
 import os
 from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(
@@ -195,18 +196,58 @@ hr {
 </style>
 """, unsafe_allow_html=True)
 
-# ── 데이터 파일 경로 ──────────────────────────────────────
-DATA_FILE = "passages.json"
+# ── Google Sheets 연동 ───────────────────────────────────
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+@st.cache_resource
+def get_sheet():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
+    )
+    client = gspread.authorize(creds)
+    sheet_id = st.secrets["SHEET_ID"]
+    spreadsheet = client.open_by_key(sheet_id)
+    try:
+        sheet = spreadsheet.worksheet("지문")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title="지문", rows=500, cols=6)
+        sheet.append_row(["id", "title", "grade", "keywords", "summary"])
+    return sheet
 
 def load_passages():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    try:
+        sheet = get_sheet()
+        rows = sheet.get_all_records()
+        return rows
+    except Exception as e:
+        st.error(f"시트 로드 실패: {e}")
+        return []
 
-def save_passages(passages):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(passages, f, ensure_ascii=False, indent=2)
+def save_passage(passage):
+    try:
+        sheet = get_sheet()
+        sheet.append_row([
+            passage["id"],
+            passage["title"],
+            passage["grade"],
+            passage["keywords"],
+            passage["summary"]
+        ])
+    except Exception as e:
+        st.error(f"저장 실패: {e}")
+
+def delete_passage(passage_id):
+    try:
+        sheet = get_sheet()
+        cell = sheet.find(passage_id)
+        if cell:
+            sheet.delete_rows(cell.row)
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
 
 # ── Gemini 설정 ───────────────────────────────────────────
 def get_gemini_model():
@@ -275,8 +316,8 @@ def build_prompt(passages, career, interests, grade):
 """
 
 # ── 세션 초기화 ───────────────────────────────────────────
-if "passages" not in st.session_state:
-    st.session_state.passages = load_passages()
+# 매번 시트에서 최신 데이터 로드
+st.session_state.passages = load_passages()
 if "result" not in st.session_state:
     st.session_state.result = None
 
@@ -415,8 +456,8 @@ with tab_admin:
                         "keywords": st.session_state.extracted_keywords,
                         "summary": st.session_state.extracted_summary
                     }
+                    save_passage(new_passage)
                     st.session_state.passages.append(new_passage)
-                    save_passages(st.session_state.passages)
                     st.session_state.extracted_keywords = ""
                     st.session_state.extracted_summary = ""
                     st.success(f"✅ '{new_title}' 추가 완료!")
@@ -448,7 +489,7 @@ with tab_admin:
                         with c2:
                             st.markdown('<div class="delete-btn">', unsafe_allow_html=True)
                             if st.button("삭제", key=f"del_{p['id']}"):
+                                delete_passage(p['id'])
                                 st.session_state.passages = [x for x in st.session_state.passages if x['id'] != p['id']]
-                                save_passages(st.session_state.passages)
                                 st.rerun()
                             st.markdown('</div>', unsafe_allow_html=True)
