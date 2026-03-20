@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+import anthropic
 import os
 from datetime import datetime
 import gspread
@@ -250,13 +250,12 @@ def delete_passage(passage_id):
     except Exception as e:
         st.error(f"삭제 실패: {e}")
 
-# ── Gemini 설정 ───────────────────────────────────────────
-def get_gemini_model():
-    api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+# ── Claude 설정 ───────────────────────────────────────────
+def get_claude_client():
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return None
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.0-flash-lite")
+    return anthropic.Anthropic(api_key=api_key)
 
 # ── 추천 프롬프트 생성 ────────────────────────────────────
 def build_prompt(passages, career, interests, grade):
@@ -343,14 +342,18 @@ with tab_student:
                 if not career:
                     st.warning("희망 진로/학과를 입력해주세요!")
                 else:
-                    model = get_gemini_model()
-                    if not model:
-                        st.error("API 키가 설정되지 않았습니다. `.streamlit/secrets.toml`에 `GEMINI_API_KEY`를 추가해주세요.")
+                    client = get_claude_client()
+                    if not client:
+                        st.error("API 키가 설정되지 않았습니다. Streamlit Secrets에 `ANTHROPIC_API_KEY`를 추가해주세요.")
                     else:
                         with st.spinner("주제를 찾는 중..."):
                             prompt = build_prompt(passages, career, interests, grade)
-                            response = model.generate_content(prompt)
-                            st.session_state.result = response.text
+                            message = client.messages.create(
+                                model="claude-sonnet-4-5",
+                                max_tokens=2000,
+                                messages=[{"role": "user", "content": prompt}]
+                            )
+                            st.session_state.result = message.content[0].text
 
             if st.session_state.result:
                 st.markdown(st.session_state.result)
