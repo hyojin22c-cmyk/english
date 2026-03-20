@@ -7,15 +7,6 @@ pip install streamlit google-generativeai
 streamlit run app.py
 ```
 
-## API 키 설정
-
-`.streamlit/secrets.toml` 파일 생성 후 아래 내용 입력:
-
-```toml
-GEMINI_API_KEY = "여기에_Google_AI_Studio_API_키"
-ADMIN_PASSWORD = "원하는_비밀번호"
-```
-
 ## 사용법
 
 ### 선생님 (지문 관리)
