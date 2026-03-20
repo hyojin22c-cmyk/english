@@ -1,6 +1,8 @@
 import streamlit as st
 import anthropic
 import os
+import hashlib
+import json
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -36,7 +38,6 @@ html, body, .stApp {
     color: var(--text);
 }
 
-/* 헤더 */
 .main-header {
     text-align: center;
     padding: 2.5rem 0 1.5rem;
@@ -58,7 +59,6 @@ html, body, .stApp {
     font-weight: 300;
 }
 
-/* 탭 */
 .stTabs [data-baseweb="tab-list"] {
     gap: 0;
     background: var(--surface);
@@ -87,7 +87,6 @@ html, body, .stApp {
     padding: 1.5rem;
 }
 
-/* 카드 */
 .passage-card {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -107,18 +106,7 @@ html, body, .stApp {
     font-size: 0.8rem;
     color: var(--text-muted);
 }
-.passage-card .grade-badge {
-    display: inline-block;
-    background: var(--accent-pale);
-    color: var(--accent);
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 0.15rem 0.5rem;
-    border-radius: 20px;
-    margin-right: 0.5rem;
-}
 
-/* 추천 결과 */
 .result-card {
     background: var(--accent-pale);
     border: 1px solid #C5DBA8;
@@ -133,7 +121,6 @@ html, body, .stApp {
     margin: 0 0 0.6rem;
 }
 
-/* 입력 필드 */
 .stTextInput input, .stTextArea textarea, .stSelectbox select {
     border: 1px solid var(--border) !important;
     border-radius: 6px !important;
@@ -145,7 +132,6 @@ html, body, .stApp {
     box-shadow: 0 0 0 2px rgba(45, 80, 22, 0.1) !important;
 }
 
-/* 버튼 */
 .stButton button {
     background: var(--accent) !important;
     color: white !important;
@@ -160,7 +146,6 @@ html, body, .stApp {
     background: var(--accent-light) !important;
 }
 
-/* 삭제 버튼 */
 .delete-btn button {
     background: transparent !important;
     color: var(--danger) !important;
@@ -173,28 +158,34 @@ html, body, .stApp {
     color: white !important;
 }
 
-/* 구분선 */
 hr {
     border: none;
     border-top: 1px solid var(--border);
     margin: 1.5rem 0;
 }
 
-/* 알림 */
 .stSuccess, .stError, .stWarning, .stInfo {
     border-radius: 6px !important;
 }
 
-/* 멀티셀렉트 */
 .stMultiSelect [data-baseweb="tag"] {
     background: var(--accent) !important;
 }
 
-/* 숨기기 */
 #MainMenu, footer, header {visibility: hidden;}
 .stDeployButton {display: none;}
 </style>
 """, unsafe_allow_html=True)
+
+# ── 유틸리티 ─────────────────────────────────────────────
+def hash_pw(pw: str) -> str:
+    """비밀번호 SHA-256 해싱"""
+    return hashlib.sha256(pw.strip().encode()).hexdigest()
+
+def make_cache_key(career, major, interests, passage_ids) -> str:
+    """API 캐시 키 생성 (동일 입력이면 같은 키)"""
+    raw = f"{career.strip()}|{major.strip()}|{interests.strip()}|{sorted(passage_ids)}"
+    return hashlib.md5(raw.encode()).hexdigest()
 
 # ── Google Sheets 연동 ───────────────────────────────────
 SCOPES = [
@@ -203,22 +194,43 @@ SCOPES = [
 ]
 
 @st.cache_resource
-def get_sheet():
+def get_gspread_client():
+    """gspread 클라이언트를 한 번만 생성"""
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=SCOPES
     )
-    client = gspread.authorize(creds)
-    sheet_id = st.secrets["SHEET_ID"]
-    spreadsheet = client.open_by_key(sheet_id)
-    try:
-        sheet = spreadsheet.worksheet("지문")
-    except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="지문", rows=500, cols=6)
-        sheet.append_row(["id", "title", "summary"])
-    return sheet
+    return gspread.authorize(creds)
 
+def _get_spreadsheet():
+    client = get_gspread_client()
+    return client.open_by_key(st.secrets["SHEET_ID"])
+
+def _get_or_create_sheet(name, cols, rows=500):
+    spreadsheet = _get_spreadsheet()
+    try:
+        return spreadsheet.worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=name, rows=rows, cols=len(cols))
+        sheet.append_row(cols)
+        return sheet
+
+def get_sheet():
+    return _get_or_create_sheet("지문", ["id", "title", "summary"])
+
+def get_auth_sheet():
+    return _get_or_create_sheet("학생인증", ["학번", "이름", "비밀번호"])
+
+def get_log_sheet():
+    return _get_or_create_sheet("사용기록", ["날짜", "학번", "이름", "진로", "관심분야", "결과"])
+
+def get_cache_sheet():
+    return _get_or_create_sheet("캐시", ["key", "result", "created"])
+
+# ── 지문 CRUD (TTL 캐시 적용) ────────────────────────────
+@st.cache_data(ttl=300)
 def load_passages():
+    """지문 목록을 5분 캐시로 로드 (Sheets API 호출 최소화)"""
     try:
         sheet = get_sheet()
         rows = sheet.get_all_records()
@@ -235,6 +247,9 @@ def save_passage(passage):
             passage["title"],
             passage["summary"]
         ])
+        # 지문 변경 시 관련 캐시 무효화
+        load_passages.clear()
+        clear_result_cache()
     except Exception as e:
         st.error(f"저장 실패: {e}")
 
@@ -246,41 +261,13 @@ def delete_passage(passage_id):
             if row and str(row[0]) == str(passage_id):
                 sheet.delete_rows(i + 1)
                 break
+        load_passages.clear()
+        clear_result_cache()
     except Exception as e:
         st.error(f"삭제 실패: {e}")
 
-@st.cache_resource
-def get_auth_sheet():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES
-    )
-    client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key(st.secrets["SHEET_ID"])
-    try:
-        sheet = spreadsheet.worksheet("학생인증")
-    except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="학생인증", rows=500, cols=3)
-        sheet.append_row(["학번", "이름", "비밀번호"])
-    return sheet
-
-@st.cache_resource
-def get_log_sheet():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES
-    )
-    client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key(st.secrets["SHEET_ID"])
-    try:
-        sheet = spreadsheet.worksheet("사용기록")
-    except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="사용기록", rows=2000, cols=5)
-        sheet.append_row(["날짜", "학번", "이름", "진로", "관심분야"])
-    return sheet
-
+# ── 학생 인증 ────────────────────────────────────────────
 def find_student(student_id):
-    """학번으로 학생 조회. 없으면 None, 있으면 row dict 반환"""
     try:
         sheet = get_auth_sheet()
         rows = sheet.get_all_records()
@@ -292,53 +279,108 @@ def find_student(student_id):
         return None
 
 def register_student(student_id, name, password):
-    """신규 학생 등록"""
     try:
         sheet = get_auth_sheet()
-        sheet.append_row([student_id, name, password])
+        sheet.append_row([student_id, name, hash_pw(password)])
         return True
     except Exception:
         return False
 
+def verify_password(stored_hash, input_pw):
+    """해싱된 비밀번호와 입력값 비교. 평문 레거시 데이터도 호환."""
+    if stored_hash == hash_pw(input_pw):
+        return True
+    # 기존 평문 데이터 호환 (마이그레이션 전)
+    if stored_hash == input_pw:
+        return True
+    return False
+
+# ── 사용 기록 ────────────────────────────────────────────
+@st.cache_data(ttl=120)
 def check_monthly_usage(student_id):
-    """이번 달 사용 횟수 반환"""
     try:
         sheet = get_log_sheet()
         rows = sheet.get_all_records()
         this_month = datetime.now().strftime("%Y-%m")
         count = sum(1 for row in rows
-                    if str(row.get("학번","")) == str(student_id)
-                    and str(row.get("날짜",""))[:7] == this_month)
+                    if str(row.get("학번", "")) == str(student_id)
+                    and str(row.get("날짜", ""))[:7] == this_month)
         return count
     except Exception:
         return 0
 
-def save_usage_log(student_id, name, career, major, interests):
+def save_usage_log(student_id, name, career, major, interests, result_text):
     try:
         sheet = get_log_sheet()
+        # 결과도 함께 저장 (나중에 학생/교사가 다시 확인 가능)
+        truncated = result_text[:3000] if result_text else ""
         sheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             student_id,
             name,
             f"{career} / {major}",
-            interests if interests else ''
+            interests if interests else "",
+            truncated
         ])
+        check_monthly_usage.clear()
     except Exception as e:
         st.error(f"기록 저장 실패: {e}")
 
+# ── 결과 캐싱 (동일 진로+지문 조합 재활용) ──────────────
+def get_cached_result(cache_key):
+    """캐시 시트에서 이전 결과 조회"""
+    try:
+        sheet = get_cache_sheet()
+        rows = sheet.get_all_records()
+        for row in rows:
+            if str(row.get("key", "")) == cache_key:
+                return row.get("result", "")
+        return None
+    except Exception:
+        return None
 
+def save_cached_result(cache_key, result_text):
+    """결과를 캐시 시트에 저장"""
+    try:
+        sheet = get_cache_sheet()
+        sheet.append_row([
+            cache_key,
+            result_text[:10000],
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ])
+    except Exception:
+        pass  # 캐시 저장 실패는 무시
+
+def clear_result_cache():
+    """지문 변경 시 캐시 전체 초기화"""
+    try:
+        sheet = get_cache_sheet()
+        # 헤더만 남기고 전부 삭제
+        all_values = sheet.get_all_values()
+        if len(all_values) > 1:
+            sheet.delete_rows(2, len(all_values))
+    except Exception:
+        pass
+
+# ── Claude API ────────────────────────────────────────────
 def get_claude_client():
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return None
     return anthropic.Anthropic(api_key=api_key)
 
-# ── 추천 프롬프트 생성 ────────────────────────────────────
+# ── 프롬프트 (지문 30개 이상 대응) ───────────────────────
+MAX_SUMMARY_LEN = 80  # 지문당 요약 최대 글자수
+
 def build_prompt(passages, career, major, interests):
     passage_text = ""
     for i, p in enumerate(passages, 1):
+        summary = p.get("summary", "")
+        # 지문이 많으면 요약을 잘라서 입력 토큰 절약
+        if len(passages) > 15 and len(summary) > MAX_SUMMARY_LEN:
+            summary = summary[:MAX_SUMMARY_LEN] + "…"
         passage_text += f"{i}. {p['title']}\n"
-        passage_text += f"   내용 요약: {p.get('summary','')}\n\n"
+        passage_text += f"   요약: {summary}\n\n"
 
     return f"""당신은 고등학교 영어 교과 세부능력 및 특기사항(세특) 작성을 돕는 전문가입니다.
 
@@ -350,25 +392,31 @@ def build_prompt(passages, career, major, interests):
 - 희망 학과: {major if major else '미입력'}
 - 관심 분야: {interests if interests else '미입력'}
 
-위 지문 내용을 바탕으로, 이 학생의 진로와 관심사에 가장 잘 연계되는 세특 주제를 정확히 3개만 추천해주세요.
+위 지문 중 학생의 진로·관심사에 가장 잘 연계되는 세특 주제를 정확히 3개만 추천하세요.
 
-각 주제는 반드시 아래 형식으로 작성하세요:
+각 주제는 아래 형식으로 작성:
 
 **[주제 번호]. 주제명**
-- 📚 연계 지문: (위 지문 목록에서 연결되는 지문 제목)
+- 📚 연계 지문: (위 목록에서 연결되는 지문 제목)
 - 🔗 영어 교과 연계 근거: (지문의 어떤 내용이 이 주제와 연결되는지 1~2문장)
-- 💡 추천 탐구 활동: (구체적인 활동 1~2개)
-- 📖 추천 도서/자료: (제목과 한 줄 소개 1~2개)
+- 💡 추천 탐구 활동: (구체적 활동 1~2개)
+- 📖 추천 도서/자료: (아래 도서 추천 규칙을 반드시 따를 것)
 
-주제는 실제로 고등학생이 수행할 수 있는 현실적인 수준으로 제안해주세요.
-"""
+[도서 추천 규칙]
+- 실제로 존재하는 도서만 추천하세요. 제목, 저자명 모두 정확해야 합니다.
+- 한국어 번역본이 있는 경우 한국어 제목과 저자를 병기하세요.
+- 도서명이 확실하지 않으면 절대 지어내지 말고, 대신 구체적인 검색 키워드를 제안하세요. (예: "○○○ 관련 도서는 '키워드1 + 키워드2'로 검색해보세요")
+- 논문, TED 강연, 다큐멘터리 등 도서 외 자료도 추천 가능합니다.
+
+주제는 고등학생이 실제 수행 가능한 현실적 수준으로 제안하세요."""
 
 # ── 세션 초기화 ───────────────────────────────────────────
-st.session_state.passages = load_passages()
+if "passages" not in st.session_state:
+    st.session_state.passages = load_passages()
 if "result" not in st.session_state:
     st.session_state.result = None
 if "auth_student" not in st.session_state:
-    st.session_state.auth_student = None  # {"학번": ..., "이름": ...}
+    st.session_state.auth_student = None
 
 # ── 헤더 ─────────────────────────────────────────────────
 st.markdown("""
@@ -394,7 +442,7 @@ with tab_student:
         if not st.session_state.auth_student:
             st.markdown("#### 🔐 로그인 / 최초 등록")
             auth_mode = st.radio("", ["로그인", "최초 등록"], horizontal=True, label_visibility="collapsed")
-            
+
             aid = st.text_input("학번", placeholder="예: 20101")
             apw = st.text_input("비밀번호", type="password", placeholder="본인이 설정한 비밀번호")
 
@@ -423,10 +471,10 @@ with tab_student:
                         student = find_student(aid)
                         if not student:
                             st.error("등록되지 않은 학번입니다. 최초 등록을 먼저 해주세요.")
-                        elif str(student.get("비밀번호","")) != str(apw):
+                        elif not verify_password(str(student.get("비밀번호", "")), apw):
                             st.error("비밀번호가 틀렸습니다.")
                         else:
-                            st.session_state.auth_student = {"학번": aid, "이름": student.get("이름","")}
+                            st.session_state.auth_student = {"학번": aid, "이름": student.get("이름", "")}
                             st.session_state.result = None
                             st.rerun()
 
@@ -469,20 +517,47 @@ with tab_student:
                     elif monthly >= 4:
                         st.error(f"⚠️ 이번 달 사용 횟수({monthly}/4회)를 초과했습니다. 다음 달에 다시 이용해주세요.")
                     else:
-                        client = get_claude_client()
-                        if not client:
-                            st.error("API 키가 설정되지 않았습니다.")
+                        # 캐시 확인
+                        passage_ids = [p.get("id", "") for p in passages]
+                        cache_key = make_cache_key(career, major, interests, passage_ids)
+                        cached = get_cached_result(cache_key)
+
+                        if cached:
+                            st.session_state.result = cached
+                            save_usage_log(student["학번"], student["이름"], career, major, interests, cached)
+                            st.caption(f"💡 이번 달 {monthly + 1}/4회 사용 (캐시 활용)")
                         else:
-                            with st.spinner("주제를 찾는 중..."):
-                                prompt = build_prompt(passages, career, major, interests)
-                                message = client.messages.create(
-                                    model="claude-sonnet-4-5",
-                                    max_tokens=4096,
-                                    messages=[{"role": "user", "content": prompt}]
-                                )
-                                st.session_state.result = message.content[0].text
-                                save_usage_log(student["학번"], student["이름"], career, major, interests)
-                                st.caption(f"💡 이번 달 {monthly+1}/4회 사용했습니다.")
+                            client = get_claude_client()
+                            if not client:
+                                st.error("API 키가 설정되지 않았습니다.")
+                            else:
+                                with st.spinner("주제를 찾는 중..."):
+                                    try:
+                                        prompt = build_prompt(passages, career, major, interests)
+                                        message = client.messages.create(
+                                            model="claude-haiku-4-5-20251001",
+                                            max_tokens=2048,
+                                            messages=[{"role": "user", "content": prompt}]
+                                        )
+                                        result_text = message.content[0].text
+                                        st.session_state.result = result_text
+
+                                        # 캐시 & 로그 저장
+                                        save_cached_result(cache_key, result_text)
+                                        save_usage_log(
+                                            student["학번"], student["이름"],
+                                            career, major, interests, result_text
+                                        )
+                                        st.caption(f"💡 이번 달 {monthly + 1}/4회 사용했습니다.")
+
+                                    except anthropic.RateLimitError:
+                                        st.error("⏳ 요청이 많아요. 30초 후 다시 시도해주세요.")
+                                    except anthropic.AuthenticationError:
+                                        st.error("🔑 API 키에 문제가 있습니다. 선생님께 문의하세요.")
+                                    except anthropic.APIError as e:
+                                        st.error(f"API 오류가 발생했습니다: {e}")
+                                    except Exception as e:
+                                        st.error(f"예상치 못한 오류: {e}")
 
                 if st.session_state.result:
                     st.markdown(st.session_state.result)
@@ -498,15 +573,14 @@ with tab_student:
 # 관리자 탭
 # ════════════════════════════════════════════════════════
 with tab_admin:
-    # 간단한 비밀번호
     if "admin_auth" not in st.session_state:
         st.session_state.admin_auth = False
 
     if not st.session_state.admin_auth:
         st.markdown("#### 🔐 관리자 로그인")
-        pw = st.text_input("비밀번호", type="password")
+        pw = st.text_input("비밀번호", type="password", key="admin_pw_input")
         admin_pw = st.secrets.get("ADMIN_PASSWORD", "teacher1234")
-        if st.button("로그인"):
+        if st.button("로그인", key="admin_login_btn"):
             if pw == admin_pw:
                 st.session_state.admin_auth = True
                 st.rerun()
@@ -517,7 +591,7 @@ with tab_admin:
 
         with col_form:
             st.markdown("#### ➕ 지문 추가")
-            
+
             new_title = st.text_input("지문 제목 *", placeholder="예: The Future of AI in Healthcare")
             new_summary = st.text_area(
                 "지문 내용 요약 *",
@@ -536,18 +610,18 @@ with tab_admin:
                         "summary": new_summary
                     }
                     save_passage(new_passage)
-                    st.session_state.passages.append(new_passage)
+                    st.session_state.passages = load_passages()
                     st.success(f"✅ '{new_title}' 추가 완료!")
                     st.rerun()
 
             st.markdown("---")
-            if st.button("🚪 로그아웃", use_container_width=True):
+            if st.button("🚪 로그아웃", use_container_width=True, key="admin_logout"):
                 st.session_state.admin_auth = False
                 st.rerun()
 
         with col_list:
             st.markdown(f"#### 📋 등록된 지문 ({len(st.session_state.passages)}개)")
-            
+
             if not st.session_state.passages:
                 st.info("등록된 지문이 없습니다.")
             else:
@@ -555,10 +629,11 @@ with tab_admin:
                     with st.container():
                         c1, c2 = st.columns([4, 1])
                         with c1:
+                            summary_preview = str(p.get('summary', ''))[:60]
                             st.markdown(f"""
                             <div class="passage-card">
                                 <h4>{p['title']}</h4>
-                                {"<br><small style='color:#888;margin-top:4px;display:block'>" + str(p.get('summary',''))[:60] + "...</small>" if p.get('summary') else ""}
+                                {"<br><small style='color:#888;margin-top:4px;display:block'>" + summary_preview + "...</small>" if summary_preview else ""}
                             </div>
                             """, unsafe_allow_html=True)
                         with c2:
