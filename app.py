@@ -215,7 +215,7 @@ def get_sheet():
         sheet = spreadsheet.worksheet("지문")
     except gspread.exceptions.WorksheetNotFound:
         sheet = spreadsheet.add_worksheet(title="지문", rows=500, cols=6)
-        sheet.append_row(["id", "title", "grade", "summary"])
+        sheet.append_row(["id", "title", "summary"])
     return sheet
 
 def load_passages():
@@ -233,7 +233,6 @@ def save_passage(passage):
         sheet.append_row([
             passage["id"],
             passage["title"],
-            passage["grade"],
             passage["summary"]
         ])
     except Exception as e:
@@ -258,10 +257,10 @@ def get_claude_client():
     return anthropic.Anthropic(api_key=api_key)
 
 # ── 추천 프롬프트 생성 ────────────────────────────────────
-def build_prompt(passages, career, interests, grade):
+def build_prompt(passages, career, interests):
     passage_text = ""
     for i, p in enumerate(passages, 1):
-        passage_text += f"{i}. [{p.get('grade','전체')}] {p['title']}\n"
+        passage_text += f"{i}. {p['title']}\n"
         passage_text += f"   내용 요약: {p.get('summary','')}\n\n"
 
     return f"""당신은 고등학교 영어 교과 세부능력 및 특기사항(세특) 작성을 돕는 전문가입니다.
@@ -270,7 +269,6 @@ def build_prompt(passages, career, interests, grade):
 {passage_text}
 
 [학생 정보]
-- 학년: {grade}
 - 희망 진로/학과: {career}
 - 관심 분야: {', '.join(interests) if interests else '없음'}
 
@@ -317,7 +315,6 @@ with tab_student:
 
         with col1:
             st.markdown("#### 내 정보 입력")
-            grade = st.selectbox("학년", ["1학년", "2학년", "3학년"])
             career = st.text_input("희망 진로 / 학과", placeholder="예: 의대, 컴퓨터공학과, 환경공학...")
             
             interest_options = ["과학/공학", "사회/정치", "경제/경영", "의학/보건", "환경/생태", 
@@ -331,7 +328,6 @@ with tab_student:
                 st.markdown(f"""
                 <div class="passage-card">
                     <h4>{p['title']}</h4>
-                    <span class="grade-badge">{p.get('grade', '전체')}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -347,10 +343,10 @@ with tab_student:
                         st.error("API 키가 설정되지 않았습니다. Streamlit Secrets에 `ANTHROPIC_API_KEY`를 추가해주세요.")
                     else:
                         with st.spinner("주제를 찾는 중..."):
-                            prompt = build_prompt(passages, career, interests, grade)
+                            prompt = build_prompt(passages, career, interests)
                             message = client.messages.create(
                                 model="claude-sonnet-4-5",
-                                max_tokens=2000,
+                                max_tokens=4096,
                                 messages=[{"role": "user", "content": prompt}]
                             )
                             st.session_state.result = message.content[0].text
@@ -391,7 +387,6 @@ with tab_admin:
             st.markdown("#### ➕ 지문 추가")
             
             new_title = st.text_input("지문 제목 *", placeholder="예: The Future of AI in Healthcare")
-            new_grade = st.selectbox("대상 학년", ["전체", "1학년", "2학년", "3학년"])
             new_summary = st.text_area(
                 "지문 내용 요약 *",
                 placeholder="예: AI가 의료 진단에 활용되는 방식과 윤리적 문제를 다룬 지문. 알고리즘 편향, 의사결정 책임, 환자 데이터 보호 등을 논의함.",
@@ -406,7 +401,6 @@ with tab_admin:
                     new_passage = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "title": new_title,
-                        "grade": new_grade,
                         "summary": new_summary
                     }
                     save_passage(new_passage)
@@ -432,7 +426,6 @@ with tab_admin:
                             st.markdown(f"""
                             <div class="passage-card">
                                 <h4>{p['title']}</h4>
-                                <span class="grade-badge">{p.get('grade','전체')}</span>
                                 {"<br><small style='color:#888;margin-top:4px;display:block'>" + str(p.get('summary',''))[:60] + "...</small>" if p.get('summary') else ""}
                             </div>
                             """, unsafe_allow_html=True)
