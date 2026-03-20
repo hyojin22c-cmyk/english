@@ -249,7 +249,60 @@ def delete_passage(passage_id):
     except Exception as e:
         st.error(f"삭제 실패: {e}")
 
-# ── Claude 설정 ───────────────────────────────────────────
+@st.cache_resource
+def get_log_sheet():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
+    )
+    client = gspread.authorize(creds)
+    sheet_id = st.secrets["SHEET_ID"]
+    spreadsheet = client.open_by_key(sheet_id)
+    try:
+        sheet = spreadsheet.worksheet("사용기록")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title="사용기록", rows=2000, cols=5)
+        sheet.append_row(["날짜", "학번", "이름", "진로", "관심분야"])
+    return sheet
+
+def check_usage(student_id):
+    """월 4회, 주 2회 제한 체크. (초과횟수, 주사용, 월사용) 반환"""
+    try:
+        sheet = get_log_sheet()
+        rows = sheet.get_all_records()
+        now = datetime.now()
+        this_month = now.strftime("%Y-%m")
+        this_week_start = (now - __import__('datetime').timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+
+        monthly = 0
+        weekly = 0
+        for row in rows:
+            if str(row.get("학번","")) != str(student_id):
+                continue
+            row_date = str(row.get("날짜",""))[:10]
+            if row_date[:7] == this_month:
+                monthly += 1
+            if row_date >= this_week_start:
+                weekly += 1
+
+        return monthly, weekly
+    except Exception:
+        return 0, 0
+
+def save_usage_log(student_id, name, career, interests):
+    try:
+        sheet = get_log_sheet()
+        sheet.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            student_id,
+            name,
+            career,
+            ', '.join(interests) if interests else ''
+        ])
+    except Exception as e:
+        st.error(f"기록 저장 실패: {e}")
+
+
 def get_claude_client():
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -315,6 +368,8 @@ with tab_student:
 
         with col1:
             st.markdown("#### 내 정보 입력")
+            student_id = st.text_input("학번 *", placeholder="예: 20101")
+            student_name = st.text_input("이름 *", placeholder="예: 홍길동")
             career = st.text_input("희망 진로 / 학과", placeholder="예: 의대, 컴퓨터공학과, 환경공학...")
             
             interest_options = ["과학/공학", "사회/정치", "경제/경영", "의학/보건", "환경/생태", 
@@ -335,21 +390,31 @@ with tab_student:
             st.markdown("#### 세특 주제 추천")
             
             if st.button("✨ 추천 받기", use_container_width=True):
-                if not career:
+                if not student_id or not student_name:
+                    st.warning("학번과 이름을 입력해주세요!")
+                elif not career:
                     st.warning("희망 진로/학과를 입력해주세요!")
                 else:
-                    client = get_claude_client()
-                    if not client:
-                        st.error("API 키가 설정되지 않았습니다. Streamlit Secrets에 `ANTHROPIC_API_KEY`를 추가해주세요.")
+                    monthly, weekly = check_usage(student_id)
+                    if weekly >= 2:
+                        st.error(f"⚠️ 이번 주 사용 횟수({weekly}/2회)를 초과했습니다. 다음 주에 다시 이용해주세요.")
+                    elif monthly >= 4:
+                        st.error(f"⚠️ 이번 달 사용 횟수({monthly}/4회)를 초과했습니다. 다음 달에 다시 이용해주세요.")
                     else:
-                        with st.spinner("주제를 찾는 중..."):
-                            prompt = build_prompt(passages, career, interests)
-                            message = client.messages.create(
-                                model="claude-sonnet-4-5",
-                                max_tokens=4096,
-                                messages=[{"role": "user", "content": prompt}]
-                            )
-                            st.session_state.result = message.content[0].text
+                        client = get_claude_client()
+                        if not client:
+                            st.error("API 키가 설정되지 않았습니다.")
+                        else:
+                            with st.spinner("주제를 찾는 중..."):
+                                prompt = build_prompt(passages, career, interests)
+                                message = client.messages.create(
+                                    model="claude-sonnet-4-5",
+                                    max_tokens=4096,
+                                    messages=[{"role": "user", "content": prompt}]
+                                )
+                                st.session_state.result = message.content[0].text
+                                save_usage_log(student_id, student_name, career, interests)
+                                st.caption(f"💡 이번 주 {weekly+1}/2회, 이번 달 {monthly+1}/4회 사용했습니다.")
 
             if st.session_state.result:
                 st.markdown(st.session_state.result)
@@ -357,7 +422,7 @@ with tab_student:
                 st.download_button(
                     label="📥 결과 저장 (txt)",
                     data=st.session_state.result,
-                    file_name=f"세특추천_{career}_{datetime.now().strftime('%Y%m%d')}.txt",
+                    file_name=f"세특추천_{student_name}_{datetime.now().strftime('%Y%m%d')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
