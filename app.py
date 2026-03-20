@@ -219,7 +219,7 @@ def get_sheet():
     return _get_or_create_sheet("지문", ["id", "title", "summary"])
 
 def get_auth_sheet():
-    return _get_or_create_sheet("학생인증", ["학번", "이름", "비밀번호"])
+    return _get_or_create_sheet("학생인증", ["학번", "이름", "비밀번호", "추가횟수"])
 
 def get_log_sheet():
     return _get_or_create_sheet("사용기록", ["날짜", "학번", "이름", "진로", "관심분야", "결과"])
@@ -281,7 +281,7 @@ def find_student(student_id):
 def register_student(student_id, name, password):
     try:
         sheet = get_auth_sheet()
-        sheet.append_row([student_id, name, hash_pw(password)])
+        sheet.append_row([student_id, name, hash_pw(password), 0])
         return True
     except Exception:
         return False
@@ -294,6 +294,50 @@ def verify_password(stored_hash, input_pw):
     if stored_hash == input_pw:
         return True
     return False
+
+BASE_MONTHLY_LIMIT = 4
+
+def get_student_limit(student_id):
+    """학생의 월 제한 횟수 반환 (기본 4 + 추가횟수)"""
+    student = find_student(student_id)
+    if not student:
+        return BASE_MONTHLY_LIMIT
+    try:
+        extra = int(student.get("추가횟수", 0) or 0)
+    except (ValueError, TypeError):
+        extra = 0
+    return BASE_MONTHLY_LIMIT + extra
+
+def grant_extra_usage(student_id, extra_count):
+    """특정 학생에게 추가 횟수 부여"""
+    try:
+        sheet = get_auth_sheet()
+        all_values = sheet.get_all_values()
+        for i, row in enumerate(all_values):
+            if row and str(row[0]) == str(student_id):
+                # 추가횟수 컬럼 (4번째, index 3)
+                try:
+                    current = int(row[3]) if len(row) > 3 and row[3] else 0
+                except (ValueError, TypeError):
+                    current = 0
+                sheet.update_cell(i + 1, 4, current + extra_count)
+                return True, current + extra_count
+        return False, 0
+    except Exception as e:
+        return False, 0
+
+def reset_extra_usage(student_id):
+    """특정 학생의 추가 횟수 초기화"""
+    try:
+        sheet = get_auth_sheet()
+        all_values = sheet.get_all_values()
+        for i, row in enumerate(all_values):
+            if row and str(row[0]) == str(student_id):
+                sheet.update_cell(i + 1, 4, 0)
+                return True
+        return False
+    except Exception:
+        return False
 
 # ── 사용 기록 ────────────────────────────────────────────
 @st.cache_data(ttl=120)
@@ -482,12 +526,13 @@ with tab_student:
         else:
             student = st.session_state.auth_student
             monthly = check_monthly_usage(student["학번"])
+            limit = get_student_limit(student["학번"])
 
             col1, col2 = st.columns([1, 1.2], gap="large")
 
             with col1:
                 st.markdown(f"#### 👋 {student['이름']}님 환영해요")
-                st.caption(f"이번 달 {monthly}/4회 사용")
+                st.caption(f"이번 달 {monthly}/{limit}회 사용")
 
                 career = st.text_input("희망 진로", placeholder="예: 의사, 개발자, 교사...")
                 major = st.text_input("희망 학과", placeholder="예: 의대, 컴퓨터공학과, 교육학과...")
@@ -514,8 +559,8 @@ with tab_student:
                 if st.button("✨ 추천 받기", use_container_width=True):
                     if not career and not major:
                         st.warning("희망 진로 또는 학과를 입력해주세요!")
-                    elif monthly >= 4:
-                        st.error(f"⚠️ 이번 달 사용 횟수({monthly}/4회)를 초과했습니다. 다음 달에 다시 이용해주세요.")
+                    elif monthly >= limit:
+                        st.error(f"⚠️ 이번 달 사용 횟수({monthly}/{limit}회)를 초과했습니다. 다음 달에 다시 이용해주세요.")
                     else:
                         # 캐시 확인
                         passage_ids = [p.get("id", "") for p in passages]
@@ -525,7 +570,7 @@ with tab_student:
                         if cached:
                             st.session_state.result = cached
                             save_usage_log(student["학번"], student["이름"], career, major, interests, cached)
-                            st.caption(f"💡 이번 달 {monthly + 1}/4회 사용 (캐시 활용)")
+                            st.caption(f"💡 이번 달 {monthly + 1}/{limit}회 사용 (캐시 활용)")
                         else:
                             client = get_claude_client()
                             if not client:
@@ -535,7 +580,7 @@ with tab_student:
                                     try:
                                         prompt = build_prompt(passages, career, major, interests)
                                         message = client.messages.create(
-                                            model="claude-haiku-4-5-20251001",
+                                            model="claude-sonnet-4-6",
                                             max_tokens=2048,
                                             messages=[{"role": "user", "content": prompt}]
                                         )
@@ -548,7 +593,7 @@ with tab_student:
                                             student["학번"], student["이름"],
                                             career, major, interests, result_text
                                         )
-                                        st.caption(f"💡 이번 달 {monthly + 1}/4회 사용했습니다.")
+                                        st.caption(f"💡 이번 달 {monthly + 1}/{limit}회 사용했습니다.")
 
                                     except anthropic.RateLimitError:
                                         st.error("⏳ 요청이 많아요. 30초 후 다시 시도해주세요.")
@@ -613,6 +658,42 @@ with tab_admin:
                     st.session_state.passages = load_passages()
                     st.success(f"✅ '{new_title}' 추가 완료!")
                     st.rerun()
+
+            st.markdown("---")
+            st.markdown("#### 🎫 학생 추가 횟수 부여")
+            st.caption("기본 4회 외에 추가 횟수를 부여합니다.")
+
+            bonus_id = st.text_input("학번", placeholder="예: 20101", key="bonus_student_id")
+            bonus_count = st.number_input("추가할 횟수", min_value=1, max_value=20, value=2, key="bonus_count")
+
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                if st.button("➕ 횟수 부여", use_container_width=True, key="grant_btn"):
+                    if not bonus_id:
+                        st.warning("학번을 입력해주세요.")
+                    else:
+                        target = find_student(bonus_id)
+                        if not target:
+                            st.error("등록되지 않은 학번입니다.")
+                        else:
+                            ok, total = grant_extra_usage(bonus_id, bonus_count)
+                            if ok:
+                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — 추가 횟수 {total}회 (총 {BASE_MONTHLY_LIMIT + total}회/월)")
+                            else:
+                                st.error("부여 실패. 다시 시도해주세요.")
+            with bc2:
+                if st.button("🔄 추가분 초기화", use_container_width=True, key="reset_btn"):
+                    if not bonus_id:
+                        st.warning("학번을 입력해주세요.")
+                    else:
+                        target = find_student(bonus_id)
+                        if not target:
+                            st.error("등록되지 않은 학번입니다.")
+                        else:
+                            if reset_extra_usage(bonus_id):
+                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — 기본 {BASE_MONTHLY_LIMIT}회로 초기화")
+                            else:
+                                st.error("초기화 실패.")
 
             st.markdown("---")
             if st.button("🚪 로그아웃", use_container_width=True, key="admin_logout"):
