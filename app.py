@@ -313,15 +313,15 @@ def check_monthly_usage(student_id):
     except Exception:
         return 0
 
-def save_usage_log(student_id, name, career, interests):
+def save_usage_log(student_id, name, career, major, interests):
     try:
         sheet = get_log_sheet()
         sheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             student_id,
             name,
-            career,
-            ', '.join(interests) if interests else ''
+            f"{career} / {major}",
+            interests if interests else ''
         ])
     except Exception as e:
         st.error(f"기록 저장 실패: {e}")
@@ -334,7 +334,7 @@ def get_claude_client():
     return anthropic.Anthropic(api_key=api_key)
 
 # ── 추천 프롬프트 생성 ────────────────────────────────────
-def build_prompt(passages, career, interests):
+def build_prompt(passages, career, major, interests):
     passage_text = ""
     for i, p in enumerate(passages, 1):
         passage_text += f"{i}. {p['title']}\n"
@@ -346,8 +346,9 @@ def build_prompt(passages, career, interests):
 {passage_text}
 
 [학생 정보]
-- 희망 진로/학과: {career}
-- 관심 분야: {', '.join(interests) if interests else '없음'}
+- 희망 진로: {career if career else '미입력'}
+- 희망 학과: {major if major else '미입력'}
+- 관심 분야: {interests if interests else '미입력'}
 
 위 지문 내용을 바탕으로, 이 학생의 진로와 관심사에 연계할 수 있는 세특 주제를 3~5개 추천해주세요.
 
@@ -440,10 +441,9 @@ with tab_student:
                 st.markdown(f"#### 👋 {student['이름']}님 환영해요")
                 st.caption(f"이번 달 {monthly}/4회 사용")
 
-                career = st.text_input("희망 진로 / 학과", placeholder="예: 의대, 컴퓨터공학과, 환경공학...")
-                interest_options = ["과학/공학", "사회/정치", "경제/경영", "의학/보건", "환경/생태",
-                                    "문학/인문", "예술/문화", "교육", "법학", "심리학", "기타"]
-                interests = st.multiselect("관심 분야 (복수 선택 가능)", interest_options)
+                career = st.text_input("희망 진로", placeholder="예: 의사, 개발자, 교사...")
+                major = st.text_input("희망 학과", placeholder="예: 의대, 컴퓨터공학과, 교육학과...")
+                interests = st.text_input("관심 분야", placeholder="예: AI, 환경, 심리학, 경제...")
 
                 st.markdown("---")
                 st.markdown("#### 수업 지문 목록")
@@ -464,8 +464,8 @@ with tab_student:
                 st.markdown("#### 세특 주제 추천")
 
                 if st.button("✨ 추천 받기", use_container_width=True):
-                    if not career:
-                        st.warning("희망 진로/학과를 입력해주세요!")
+                    if not career and not major:
+                        st.warning("희망 진로 또는 학과를 입력해주세요!")
                     elif monthly >= 4:
                         st.error(f"⚠️ 이번 달 사용 횟수({monthly}/4회)를 초과했습니다. 다음 달에 다시 이용해주세요.")
                     else:
@@ -474,14 +474,14 @@ with tab_student:
                             st.error("API 키가 설정되지 않았습니다.")
                         else:
                             with st.spinner("주제를 찾는 중..."):
-                                prompt = build_prompt(passages, career, interests)
+                                prompt = build_prompt(passages, career, major, interests)
                                 message = client.messages.create(
                                     model="claude-sonnet-4-5",
                                     max_tokens=4096,
                                     messages=[{"role": "user", "content": prompt}]
                                 )
                                 st.session_state.result = message.content[0].text
-                                save_usage_log(student["학번"], student["이름"], career, interests)
+                                save_usage_log(student["학번"], student["이름"], career, major, interests)
                                 st.caption(f"💡 이번 달 {monthly+1}/4회 사용했습니다.")
 
                 if st.session_state.result:
