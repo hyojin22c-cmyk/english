@@ -219,13 +219,16 @@ def get_sheet():
     return _get_or_create_sheet("지문", ["id", "title", "summary"])
 
 def get_auth_sheet():
-    return _get_or_create_sheet("학생인증", ["학번", "이름", "비밀번호", "추가횟수"])
+    return _get_or_create_sheet("학생인증", ["학번", "이름", "비밀번호"])
 
 def get_log_sheet():
     return _get_or_create_sheet("사용기록", ["날짜", "학번", "이름", "진로", "관심분야", "결과"])
 
 def get_cache_sheet():
     return _get_or_create_sheet("캐시", ["key", "result", "created"])
+
+def get_bonus_sheet():
+    return _get_or_create_sheet("추가횟수", ["학번", "횟수", "적용월"])
 
 # ── 지문 CRUD (TTL 캐시 적용) ────────────────────────────
 @st.cache_data(ttl=300)
@@ -281,7 +284,7 @@ def find_student(student_id):
 def register_student(student_id, name, password):
     try:
         sheet = get_auth_sheet()
-        sheet.append_row([student_id, name, hash_pw(password), 0])
+        sheet.append_row([student_id, name, hash_pw(password)])
         return True
     except Exception:
         return False
@@ -298,44 +301,48 @@ def verify_password(stored_hash, input_pw):
 BASE_MONTHLY_LIMIT = 4
 
 def get_student_limit(student_id):
-    """학생의 월 제한 횟수 반환 (기본 4 + 추가횟수)"""
-    student = find_student(student_id)
-    if not student:
-        return BASE_MONTHLY_LIMIT
+    """학생의 이번 달 제한 횟수 반환 (기본 4 + 이번 달 추가횟수)"""
+    this_month = datetime.now().strftime("%Y-%m")
     try:
-        extra = int(student.get("추가횟수", 0) or 0)
-    except (ValueError, TypeError):
+        sheet = get_bonus_sheet()
+        rows = sheet.get_all_records()
         extra = 0
-    return BASE_MONTHLY_LIMIT + extra
+        for row in rows:
+            if str(row.get("학번", "")) == str(student_id) and str(row.get("적용월", "")) == this_month:
+                try:
+                    extra += int(row.get("횟수", 0) or 0)
+                except (ValueError, TypeError):
+                    pass
+        return BASE_MONTHLY_LIMIT + extra
+    except Exception:
+        return BASE_MONTHLY_LIMIT
 
 def grant_extra_usage(student_id, extra_count):
-    """특정 학생에게 추가 횟수 부여"""
+    """특정 학생에게 이번 달 추가 횟수 부여"""
+    this_month = datetime.now().strftime("%Y-%m")
     try:
-        sheet = get_auth_sheet()
-        all_values = sheet.get_all_values()
-        for i, row in enumerate(all_values):
-            if row and str(row[0]) == str(student_id):
-                # 추가횟수 컬럼 (4번째, index 3)
-                try:
-                    current = int(row[3]) if len(row) > 3 and row[3] else 0
-                except (ValueError, TypeError):
-                    current = 0
-                sheet.update_cell(i + 1, 4, current + extra_count)
-                return True, current + extra_count
-        return False, 0
-    except Exception as e:
+        sheet = get_bonus_sheet()
+        sheet.append_row([str(student_id), extra_count, this_month])
+        return True, get_student_limit(student_id) - BASE_MONTHLY_LIMIT
+    except Exception:
         return False, 0
 
 def reset_extra_usage(student_id):
-    """특정 학생의 추가 횟수 초기화"""
+    """특정 학생의 이번 달 추가 횟수 전부 삭제"""
+    this_month = datetime.now().strftime("%Y-%m")
     try:
-        sheet = get_auth_sheet()
+        sheet = get_bonus_sheet()
         all_values = sheet.get_all_values()
+        # 뒤에서부터 삭제해야 인덱스가 안 밀림
+        rows_to_delete = []
         for i, row in enumerate(all_values):
-            if row and str(row[0]) == str(student_id):
-                sheet.update_cell(i + 1, 4, 0)
-                return True
-        return False
+            if i == 0:  # 헤더 스킵
+                continue
+            if row and str(row[0]) == str(student_id) and len(row) > 2 and str(row[2]) == this_month:
+                rows_to_delete.append(i + 1)
+        for row_idx in reversed(rows_to_delete):
+            sheet.delete_rows(row_idx)
+        return True
     except Exception:
         return False
 
@@ -661,7 +668,7 @@ with tab_admin:
 
             st.markdown("---")
             st.markdown("#### 🎫 학생 추가 횟수 부여")
-            st.caption("기본 4회 외에 추가 횟수를 부여합니다.")
+            st.caption("이번 달에만 적용됩니다. 다음 달에는 자동으로 기본 4회로 돌아갑니다.")
 
             bonus_id = st.text_input("학번", placeholder="예: 20101", key="bonus_student_id")
             bonus_count = st.number_input("추가할 횟수", min_value=1, max_value=20, value=2, key="bonus_count")
@@ -678,7 +685,9 @@ with tab_admin:
                         else:
                             ok, total = grant_extra_usage(bonus_id, bonus_count)
                             if ok:
-                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — 추가 횟수 {total}회 (총 {BASE_MONTHLY_LIMIT + total}회/월)")
+                                this_month = datetime.now().strftime("%Y년 %m월")
+                                new_limit = get_student_limit(bonus_id)
+                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — {this_month} 총 {new_limit}회 사용 가능")
                             else:
                                 st.error("부여 실패. 다시 시도해주세요.")
             with bc2:
@@ -691,7 +700,7 @@ with tab_admin:
                             st.error("등록되지 않은 학번입니다.")
                         else:
                             if reset_extra_usage(bonus_id):
-                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — 기본 {BASE_MONTHLY_LIMIT}회로 초기화")
+                                st.success(f"✅ {target.get('이름', '')}({bonus_id}) — 이번 달 기본 {BASE_MONTHLY_LIMIT}회로 초기화")
                             else:
                                 st.error("초기화 실패.")
 
