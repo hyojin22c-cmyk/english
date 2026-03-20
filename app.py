@@ -216,6 +216,31 @@ def get_gemini_model():
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.0-flash")
 
+# ── 지문 분석 프롬프트 ────────────────────────────────────
+def extract_passage_info(model, title, full_text):
+    prompt = f"""다음 영어 지문을 분석해서 아래 형식으로만 답해줘. 다른 말은 하지 마.
+
+지문 제목: {title}
+지문 내용:
+{full_text}
+
+형식:
+KEYWORDS: (핵심 키워드 5~8개, 쉼표로 구분, 한국어로)
+SUMMARY: (이 지문이 다루는 핵심 내용을 2~3문장으로 요약, 한국어로)
+"""
+    response = model.generate_content(prompt)
+    text = response.text.strip()
+    
+    keywords = ""
+    summary = ""
+    for line in text.split("\n"):
+        if line.startswith("KEYWORDS:"):
+            keywords = line.replace("KEYWORDS:", "").strip()
+        elif line.startswith("SUMMARY:"):
+            summary = line.replace("SUMMARY:", "").strip()
+    
+    return keywords, summary
+
 # ── 추천 프롬프트 생성 ────────────────────────────────────
 def build_prompt(passages, career, interests, grade):
     passage_summary = ""
@@ -351,22 +376,49 @@ with tab_admin:
             
             new_title = st.text_input("지문 제목 *", placeholder="예: The Future of AI in Healthcare")
             new_grade = st.selectbox("대상 학년", ["전체", "1학년", "2학년", "3학년"])
-            new_keywords = st.text_input("핵심 키워드 *", placeholder="예: AI, 의료, 진단, 윤리")
-            new_summary = st.text_area("주제 요약 (선택)", placeholder="이 지문이 다루는 내용을 2~3문장으로 요약해주세요.", height=100)
+            new_text = st.text_area("지문 원문 *", placeholder="영어 지문 전체를 붙여넣으세요.", height=200)
 
-            if st.button("지문 추가", use_container_width=True):
-                if not new_title or not new_keywords:
-                    st.warning("제목과 키워드는 필수입니다!")
+            # 자동 추출된 결과 저장용
+            if "extracted_keywords" not in st.session_state:
+                st.session_state.extracted_keywords = ""
+            if "extracted_summary" not in st.session_state:
+                st.session_state.extracted_summary = ""
+
+            if st.button("🔍 키워드/요약 자동 추출", use_container_width=True):
+                if not new_title or not new_text:
+                    st.warning("제목과 지문 원문을 입력해주세요!")
+                else:
+                    model = get_gemini_model()
+                    if not model:
+                        st.error("API 키가 설정되지 않았습니다.")
+                    else:
+                        with st.spinner("지문 분석 중..."):
+                            kw, sm = extract_passage_info(model, new_title, new_text)
+                            st.session_state.extracted_keywords = kw
+                            st.session_state.extracted_summary = sm
+
+            if st.session_state.extracted_keywords:
+                st.success("✅ 추출 완료! 확인 후 저장하세요.")
+                st.caption(f"🏷 키워드: {st.session_state.extracted_keywords}")
+                st.caption(f"📝 요약: {st.session_state.extracted_summary}")
+
+            if st.button("💾 지문 저장", use_container_width=True):
+                if not new_title or not new_text:
+                    st.warning("제목과 지문 원문은 필수입니다!")
+                elif not st.session_state.extracted_keywords:
+                    st.warning("먼저 '키워드/요약 자동 추출' 버튼을 눌러주세요!")
                 else:
                     new_passage = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "title": new_title,
                         "grade": new_grade,
-                        "keywords": new_keywords,
-                        "summary": new_summary
+                        "keywords": st.session_state.extracted_keywords,
+                        "summary": st.session_state.extracted_summary
                     }
                     st.session_state.passages.append(new_passage)
                     save_passages(st.session_state.passages)
+                    st.session_state.extracted_keywords = ""
+                    st.session_state.extracted_summary = ""
                     st.success(f"✅ '{new_title}' 추가 완료!")
                     st.rerun()
 
