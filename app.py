@@ -541,19 +541,16 @@ with tab_student:
                 st.markdown(f"#### 👋 {student['이름']}님 환영해요")
                 st.caption(f"이번 달 {monthly}/{limit}회 사용")
 
+                st.markdown(f"""
+                <div style="background: var(--accent-pale); border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 1rem;">
+                    <span style="font-size: 0.95rem;">📚 수업 지문 <strong>{len(passages)}개</strong>가 등록되어 있습니다.</span><br>
+                    <span style="font-size: 0.82rem; color: var(--text-muted);">진로와 관심사를 입력하면 지문에서 맞춤 세특 주제를 추천해드려요.</span>
+                </div>
+                """, unsafe_allow_html=True)
+
                 career = st.text_input("희망 진로", placeholder="예: 의사, 개발자, 교사...")
                 major = st.text_input("희망 학과", placeholder="예: 의대, 컴퓨터공학과, 교육학과...")
                 interests = st.text_input("관심 분야", placeholder="예: AI, 환경, 심리학, 경제...")
-
-                st.markdown("---")
-                st.markdown("#### 수업 지문 목록")
-                st.caption(f"총 {len(passages)}개 지문 등록됨")
-                for p in passages:
-                    st.markdown(f"""
-                    <div class="passage-card">
-                        <h4>{p['title']}</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
 
                 if st.button("🚪 로그아웃", use_container_width=True):
                     st.session_state.auth_student = None
