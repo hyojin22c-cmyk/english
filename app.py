@@ -790,7 +790,7 @@ with tab_admin:
                             st.markdown(f"""
                             <div class="passage-card">
                                 <h4>{p['title']}</h4>
-                                {"<br><small style='color:#888;margin-top:4px;display:block'>" + summary_preview + "...</small>" if summary_preview else ""}
+                                {"<br><small style='color:var(--text-muted);margin-top:4px;display:block'>" + summary_preview + "...</small>" if summary_preview else ""}
                             </div>
                             """, unsafe_allow_html=True)
                         with c2:
