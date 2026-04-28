@@ -20,6 +20,7 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
 
+/* 🌞 라이트 모드 (기본) */
 :root {
     --bg: #F7F4EE;
     --surface: #FFFFFF;
@@ -27,9 +28,28 @@ st.markdown("""
     --accent: #2D5016;
     --accent-light: #4A7C2F;
     --accent-pale: #EBF2E4;
+    --result-border: #C5DBA8;
+    --focus-shadow: rgba(45, 80, 22, 0.1);
     --text: #1A1A1A;
     --text-muted: #6B6458;
     --danger: #C0392B;
+}
+
+/* 🌙 다크 모드 (나이트 모드) */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1A1816;          /* 어두운 웜톤 배경 */
+        --surface: #262320;     /* 카드 및 탭 배경 */
+        --border: #403A33;      /* 경계선 */
+        --accent: #95C171;      /* 가독성을 높인 밝은 녹색 */
+        --accent-light: #B2D892;
+        --accent-pale: #2A3324; /* 어두운 녹색 배경 */
+        --result-border: #3F4F2F;
+        --focus-shadow: rgba(149, 193, 113, 0.2);
+        --text: #E8E6E1;        /* 밝은 텍스트 */
+        --text-muted: #A09A90;  /* 회색 텍스트 */
+        --danger: #E57373;      /* 부드러운 빨간색 */
+    }
 }
 
 html, body, .stApp {
@@ -77,7 +97,7 @@ html, body, .stApp {
 }
 .stTabs [aria-selected="true"] {
     background: var(--accent) !important;
-    color: white !important;
+    color: var(--bg) !important; /* 다크모드 대비 배경색으로 반전 */
 }
 .stTabs [data-baseweb="tab-panel"] {
     background: var(--surface);
@@ -109,7 +129,7 @@ html, body, .stApp {
 
 .result-card {
     background: var(--accent-pale);
-    border: 1px solid #C5DBA8;
+    border: 1px solid var(--result-border); /* 변수로 대체 */
     border-radius: 8px;
     padding: 1.2rem 1.5rem;
     margin-bottom: 1rem;
@@ -126,15 +146,16 @@ html, body, .stApp {
     border-radius: 6px !important;
     font-family: 'Noto Sans KR', sans-serif !important;
     background: var(--bg) !important;
+    color: var(--text) !important; /* 입력창 글자색 추가 */
 }
 .stTextInput input:focus, .stTextArea textarea:focus {
     border-color: var(--accent) !important;
-    box-shadow: 0 0 0 2px rgba(45, 80, 22, 0.1) !important;
+    box-shadow: 0 0 0 2px var(--focus-shadow) !important; /* 변수로 대체 */
 }
 
 .stButton button {
     background: var(--accent) !important;
-    color: white !important;
+    color: var(--bg) !important; /* 다크모드 대비 반전 */
     border: none !important;
     border-radius: 6px !important;
     font-family: 'Noto Sans KR', sans-serif !important;
@@ -155,10 +176,9 @@ html, body, .stApp {
 }
 .delete-btn button:hover {
     background: var(--danger) !important;
-    color: white !important;
+    color: var(--bg) !important; /* 텍스트 반전 */
 }
 
-/* 로그아웃 버튼 */
 .logout-btn button {
     background: transparent !important;
     color: var(--text-muted) !important;
@@ -168,7 +188,7 @@ html, body, .stApp {
     margin-top: 0.5rem !important;
 }
 .logout-btn button:hover {
-    background: var(--bg) !important;
+    background: var(--surface) !important;
     color: var(--text) !important;
 }
 
@@ -190,7 +210,6 @@ hr {
 .stDeployButton {display: none;}
 </style>
 """, unsafe_allow_html=True)
-
 # ── 유틸리티 ─────────────────────────────────────────────
 def hash_pw(pw: str) -> str:
     """비밀번호 SHA-256 해싱"""
